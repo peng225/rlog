@@ -44,7 +44,7 @@ func NewRawTextHandler(w io.Writer, opts *slog.HandlerOptions) *RawTextHandler {
 }
 
 func (h *RawTextHandler) Enabled(ctx context.Context, level slog.Level) bool {
-	return true
+	return level >= h.opts.Level.Level()
 }
 
 func (h *RawTextHandler) printAttr(buf io.Writer, attr slog.Attr, paren Parenthesis) error {

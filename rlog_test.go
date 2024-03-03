@@ -54,3 +54,45 @@ func TestRlog(t *testing.T) {
 	expected = "test (outerKey=(middleKey=(innerKey1=1, innerKey2=2)))\n"
 	assert.Equal(t, expected, getRightN(b.String(), len(expected)))
 }
+
+func TestRlogLevel(t *testing.T) {
+	b := new(bytes.Buffer)
+	logger := slog.New(NewRawTextHandler(b, &slog.HandlerOptions{
+		Level: slog.LevelWarn,
+	}))
+	require.NotNil(t, logger)
+
+	cases := []struct {
+		name        string
+		logFunc     func(msg string, args ...any)
+		expectedLog string
+	}{
+		{
+			name:        "Debug not printed",
+			logFunc:     logger.Debug,
+			expectedLog: "",
+		},
+		{
+			name:        "Info not printed",
+			logFunc:     logger.Info,
+			expectedLog: "",
+		},
+		{
+			name:        "Warn printed",
+			logFunc:     logger.Warn,
+			expectedLog: "test\n",
+		},
+		{
+			name:        "Error printed",
+			logFunc:     logger.Error,
+			expectedLog: "test\n",
+		},
+	}
+
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.logFunc("test")
+			assert.Equal(t, tt.expectedLog, getRightN(b.String(), len(tt.expectedLog)))
+		})
+	}
+}
