@@ -1,6 +1,7 @@
 package rlog
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -49,9 +50,9 @@ func (h *rawTextHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return true
 }
 
-func (h *rawTextHandler) printAttr(attr slog.Attr, paren Parenthesis) error {
+func (h *rawTextHandler) printAttr(buf io.Writer, attr slog.Attr, paren Parenthesis) error {
 	if paren&Left != 0 {
-		_, err := fmt.Fprint(h.w, "(")
+		_, err := fmt.Fprint(buf, "(")
 		if err != nil {
 			return err
 		}
@@ -59,7 +60,7 @@ func (h *rawTextHandler) printAttr(attr slog.Attr, paren Parenthesis) error {
 
 	switch v := attr.Value.Any().(type) {
 	case []slog.Attr:
-		_, err := fmt.Fprintf(h.w, "%v=", attr.Key)
+		_, err := fmt.Fprintf(buf, "%v=", attr.Key)
 		if err != nil {
 			return err
 		}
@@ -71,7 +72,7 @@ func (h *rawTextHandler) printAttr(attr slog.Attr, paren Parenthesis) error {
 			if i == len(v)-1 {
 				p |= Right
 			}
-			err = h.printAttr(a, p)
+			err = h.printAttr(buf, a, p)
 			if err != nil {
 				break
 			}
@@ -81,14 +82,14 @@ func (h *rawTextHandler) printAttr(attr slog.Attr, paren Parenthesis) error {
 		if paren&Left != 0 {
 			fmtString = fmtString[2:]
 		}
-		_, err := fmt.Fprintf(h.w, fmtString, attr.Key, attr.Value)
+		_, err := fmt.Fprintf(buf, fmtString, attr.Key, attr.Value)
 		if err != nil {
 			break
 		}
 	}
 
 	if paren&Right != 0 {
-		_, err := fmt.Fprint(h.w, ")")
+		_, err := fmt.Fprint(buf, ")")
 		if err != nil {
 			return err
 		}
@@ -97,11 +98,10 @@ func (h *rawTextHandler) printAttr(attr slog.Attr, paren Parenthesis) error {
 }
 
 func (h *rawTextHandler) Handle(ctx context.Context, r slog.Record) error {
+	buf := bytes.NewBuffer(make([]byte, 0, 1024))
 	frames := runtime.CallersFrames([]uintptr{r.PC})
 	frame, _ := frames.Next()
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	_, err := fmt.Fprintf(h.w, "%s %s %s:%d %s",
+	_, err := fmt.Fprintf(buf, "%s %s %s:%d %s",
 		r.Time.Format("2006-01-02T15:04:05.999Z07:00"), r.Level, filepath.Base(frame.File), frame.Line, r.Message)
 	if err != nil {
 		return err
@@ -114,7 +114,7 @@ func (h *rawTextHandler) Handle(ctx context.Context, r slog.Record) error {
 		paren := None
 		if count == 0 {
 			paren |= Left
-			_, err := fmt.Fprint(h.w, " ")
+			_, err := fmt.Fprint(buf, " ")
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				return false
@@ -124,7 +124,7 @@ func (h *rawTextHandler) Handle(ctx context.Context, r slog.Record) error {
 			paren |= Right
 		}
 
-		err = h.printAttr(a, paren)
+		err = h.printAttr(buf, a, paren)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return false
@@ -133,10 +133,21 @@ func (h *rawTextHandler) Handle(ctx context.Context, r slog.Record) error {
 
 		return true
 	})
-	_, err = fmt.Fprintf(h.w, "\n")
+	_, err = fmt.Fprint(buf, "\n")
 	if err != nil {
 		return err
 	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n, err := h.w.Write(buf.Bytes())
+	if err != nil {
+		return err
+	}
+	if n != len(buf.Bytes()) {
+		return fmt.Errorf("incomplete log write. (expected=%d, actual=%d)", len(buf.Bytes()), n)
+	}
+
 	return nil
 }
 
