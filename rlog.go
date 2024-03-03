@@ -12,10 +12,11 @@ import (
 	"sync"
 )
 
-type rawTextHandler struct {
-	mu    sync.Mutex
-	w     io.Writer
-	attrs []slog.Attr
+type RawTextHandler struct {
+	mu     sync.Mutex
+	writer io.Writer
+	attrs  []slog.Attr
+	opts   slog.HandlerOptions
 }
 
 type Parenthesis int
@@ -27,30 +28,26 @@ const (
 	Both  Parenthesis = 0b11
 )
 
-type Option func(*rawTextHandler)
+func NewRawTextHandler(w io.Writer, opts *slog.HandlerOptions) *RawTextHandler {
+	h := &RawTextHandler{
+		writer: w,
+	}
 
-func NewRawTextHandler(attrs []slog.Attr, setters ...Option) slog.Handler {
-	rth := &rawTextHandler{
-		w:     os.Stdout,
-		attrs: attrs,
+	if opts != nil {
+		h.opts = *opts
 	}
-	for _, setter := range setters {
-		setter(rth)
+	if h.opts.Level == nil {
+		h.opts.Level = slog.LevelInfo
 	}
-	return rth
+
+	return h
 }
 
-func WithWriter(w io.Writer) Option {
-	return func(rth *rawTextHandler) {
-		rth.w = w
-	}
-}
-
-func (h *rawTextHandler) Enabled(ctx context.Context, level slog.Level) bool {
+func (h *RawTextHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return true
 }
 
-func (h *rawTextHandler) printAttr(buf io.Writer, attr slog.Attr, paren Parenthesis) error {
+func (h *RawTextHandler) printAttr(buf io.Writer, attr slog.Attr, paren Parenthesis) error {
 	if paren&Left != 0 {
 		_, err := fmt.Fprint(buf, "(")
 		if err != nil {
@@ -97,14 +94,22 @@ func (h *rawTextHandler) printAttr(buf io.Writer, attr slog.Attr, paren Parenthe
 	return nil
 }
 
-func (h *rawTextHandler) Handle(ctx context.Context, r slog.Record) error {
+func (h *RawTextHandler) Handle(ctx context.Context, r slog.Record) error {
 	buf := bytes.NewBuffer(make([]byte, 0, 1024))
-	frames := runtime.CallersFrames([]uintptr{r.PC})
-	frame, _ := frames.Next()
-	_, err := fmt.Fprintf(buf, "%s %s %s:%d %s",
-		r.Time.Format("2006-01-02T15:04:05.999Z07:00"), r.Level, filepath.Base(frame.File), frame.Line, r.Message)
-	if err != nil {
-		return err
+	if h.opts.AddSource {
+		frames := runtime.CallersFrames([]uintptr{r.PC})
+		frame, _ := frames.Next()
+		_, err := fmt.Fprintf(buf, "%s %s %s:%d %s",
+			r.Time.Format("2006-01-02T15:04:05.999Z07:00"), r.Level, filepath.Base(frame.File), frame.Line, r.Message)
+		if err != nil {
+			return err
+		}
+	} else {
+		_, err := fmt.Fprintf(buf, "%s %s %s",
+			r.Time.Format("2006-01-02T15:04:05.999Z07:00"), r.Level, r.Message)
+		if err != nil {
+			return err
+		}
 	}
 
 	r.AddAttrs(h.attrs...)
@@ -124,7 +129,7 @@ func (h *rawTextHandler) Handle(ctx context.Context, r slog.Record) error {
 			paren |= Right
 		}
 
-		err = h.printAttr(buf, a, paren)
+		err := h.printAttr(buf, a, paren)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return false
@@ -133,14 +138,14 @@ func (h *rawTextHandler) Handle(ctx context.Context, r slog.Record) error {
 
 		return true
 	})
-	_, err = fmt.Fprint(buf, "\n")
+	_, err := fmt.Fprint(buf, "\n")
 	if err != nil {
 		return err
 	}
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	n, err := h.w.Write(buf.Bytes())
+	n, err := h.writer.Write(buf.Bytes())
 	if err != nil {
 		return err
 	}
@@ -151,10 +156,10 @@ func (h *rawTextHandler) Handle(ctx context.Context, r slog.Record) error {
 	return nil
 }
 
-func (h *rawTextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return NewRawTextHandler(attrs)
+func (h *RawTextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return NewRawTextHandler(h.writer, nil)
 }
 
-func (h *rawTextHandler) WithGroup(name string) slog.Handler {
+func (h *RawTextHandler) WithGroup(name string) slog.Handler {
 	return h
 }

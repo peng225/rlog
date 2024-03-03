@@ -16,7 +16,7 @@ func getRightN(s string, n int) string {
 
 func TestRlog(t *testing.T) {
 	b := new(bytes.Buffer)
-	logger := slog.New(NewRawTextHandler(nil, WithWriter(b)))
+	logger := slog.New(NewRawTextHandler(b, nil))
 	require.NotNil(t, logger)
 
 	logger.Info("test")
