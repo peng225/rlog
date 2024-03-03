@@ -56,18 +56,19 @@ func (h *RawTextHandler) printAttr(buf io.Writer, attr slog.Attr, paren Parenthe
 		}
 	}
 
-	switch v := attr.Value.Any().(type) {
-	case []slog.Attr:
+	switch attr.Value.Kind() {
+	case slog.KindGroup:
+		attrs := attr.Value.Group()
 		_, err := fmt.Fprintf(buf, "%v=", attr.Key)
 		if err != nil {
 			return err
 		}
-		for i, a := range v {
+		for i, a := range attrs {
 			p := None
 			if i == 0 {
 				p |= Left
 			}
-			if i == len(v)-1 {
+			if i == len(attrs)-1 {
 				p |= Right
 			}
 			err = h.printAttr(buf, a, p)
