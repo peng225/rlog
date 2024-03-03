@@ -13,7 +13,7 @@ import (
 )
 
 type RawTextHandler struct {
-	mu     sync.Mutex
+	mu     *sync.Mutex
 	writer io.Writer
 	attrs  []slog.Attr
 	opts   slog.HandlerOptions
@@ -30,6 +30,7 @@ const (
 
 func NewRawTextHandler(w io.Writer, opts *slog.HandlerOptions) *RawTextHandler {
 	h := &RawTextHandler{
+		mu:     &sync.Mutex{},
 		writer: w,
 	}
 
