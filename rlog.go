@@ -10,23 +10,21 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+
+	"github.com/peng225/rlog/internal/ppstack"
 )
+
+type groupOrAttrs struct {
+	group string
+	attrs []slog.Attr
+}
 
 type RawTextHandler struct {
 	mu     *sync.Mutex
 	writer io.Writer
-	attrs  []slog.Attr
 	opts   slog.HandlerOptions
+	goas   []groupOrAttrs
 }
-
-type Parenthesis int
-
-const (
-	None  Parenthesis = 0b00
-	Left  Parenthesis = 0b01
-	Right Parenthesis = 0b10
-	Both  Parenthesis = 0b11
-)
 
 func NewRawTextHandler(w io.Writer, opts *slog.HandlerOptions) *RawTextHandler {
 	h := &RawTextHandler{
@@ -48,49 +46,48 @@ func (h *RawTextHandler) Enabled(ctx context.Context, level slog.Level) bool {
 	return level >= h.opts.Level.Level()
 }
 
-func (h *RawTextHandler) printAttr(buf io.Writer, attr slog.Attr, paren Parenthesis) error {
-	if paren&Left != 0 {
-		_, err := fmt.Fprint(buf, "(")
-		if err != nil {
-			return err
-		}
+func (h *RawTextHandler) printAttr(buf io.Writer, attr slog.Attr, pps *ppstack.ParenPrintStack, leftMost bool) error {
+	// Resolve the Attr's value before doing anything else.
+	attr.Value = attr.Value.Resolve()
+	if attr.Equal(slog.Attr{}) {
+		return nil
 	}
 
 	switch attr.Value.Kind() {
 	case slog.KindGroup:
+		if !leftMost {
+			_, err := fmt.Fprint(buf, ", ")
+			if err != nil {
+				return err
+			}
+		}
 		attrs := attr.Value.Group()
 		_, err := fmt.Fprintf(buf, "%v=", attr.Key)
 		if err != nil {
 			return err
 		}
+		err = pps.Push()
+		if err != nil {
+			return err
+		}
 		for i, a := range attrs {
-			p := None
-			if i == 0 {
-				p |= Left
-			}
-			if i == len(attrs)-1 {
-				p |= Right
-			}
-			err = h.printAttr(buf, a, p)
+			err = h.printAttr(buf, a, pps, i == 0)
 			if err != nil {
 				break
 			}
 		}
+		err = pps.Pop()
+		if err != nil {
+			return err
+		}
 	default:
 		fmtString := ", %v=%v"
-		if paren&Left != 0 {
+		if leftMost {
 			fmtString = fmtString[2:]
 		}
 		_, err := fmt.Fprintf(buf, fmtString, attr.Key, attr.Value)
 		if err != nil {
 			break
-		}
-	}
-
-	if paren&Right != 0 {
-		_, err := fmt.Fprint(buf, ")")
-		if err != nil {
-			return err
 		}
 	}
 	return nil
@@ -114,34 +111,91 @@ func (h *RawTextHandler) Handle(ctx context.Context, r slog.Record) error {
 		}
 	}
 
-	r.AddAttrs(h.attrs...)
+	goas := h.goas
+	if r.NumAttrs() == 0 {
+		for len(goas) > 0 && goas[len(goas)-1].group != "" {
+			goas = goas[:len(goas)-1]
+		}
+	}
 
-	count := 0
+	// Print the separator between the message and attributes.
+	if len(goas) != 0 || r.NumAttrs() != 0 {
+		_, err := fmt.Fprint(buf, " ")
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return err
+		}
+	}
+
+	pps := ppstack.NewParenPrintStack(buf)
+	leftMost := true
+	for _, goa := range goas {
+		if goa.group != "" && len(goa.attrs) != 0 {
+			err := fmt.Errorf("invalid group and attribute settings")
+			fmt.Fprintln(os.Stderr, err)
+			return err
+		} else if goa.group != "" {
+			prefix := ", "
+			if leftMost {
+				err := pps.Push()
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					return err
+				}
+				prefix = ""
+			}
+			_, err := buf.WriteString(prefix + goa.group + "=")
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return err
+			}
+			leftMost = true
+		} else if len(goa.attrs) != 0 {
+			if leftMost {
+				err := pps.Push()
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					return err
+				}
+			}
+			for _, a := range goa.attrs {
+				err := h.printAttr(buf, a, pps, leftMost)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					return err
+				}
+				leftMost = false
+			}
+		}
+	}
+
 	r.Attrs(func(a slog.Attr) bool {
-		paren := None
-		if count == 0 {
-			paren |= Left
-			_, err := fmt.Fprint(buf, " ")
+		if leftMost {
+			err := pps.Push()
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				return false
 			}
 		}
-		if count == r.NumAttrs()-1 {
-			paren |= Right
-		}
-
-		err := h.printAttr(buf, a, paren)
+		err := h.printAttr(buf, a, pps, leftMost)
+		leftMost = false
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return false
 		}
-		count += 1
-
 		return true
 	})
+
+	for !pps.Empty() {
+		err := pps.Pop()
+		if err != nil {
+			return err
+		}
+	}
+
 	_, err := fmt.Fprint(buf, "\n")
 	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return err
 	}
 
@@ -152,16 +206,32 @@ func (h *RawTextHandler) Handle(ctx context.Context, r slog.Record) error {
 		return err
 	}
 	if n != len(buf.Bytes()) {
-		return fmt.Errorf("incomplete log write. (expected=%d, actual=%d)", len(buf.Bytes()), n)
+		err := fmt.Errorf("incomplete log write. (expected=%d, actual=%d)", len(buf.Bytes()), n)
+		fmt.Fprintln(os.Stderr, err)
+		return err
 	}
 
 	return nil
 }
 
+func (h *RawTextHandler) withGroupOrAttrs(goa groupOrAttrs) *RawTextHandler {
+	newHandler := *h
+	newHandler.goas = make([]groupOrAttrs, len(h.goas)+1)
+	copy(newHandler.goas, h.goas)
+	newHandler.goas[len(newHandler.goas)-1] = goa
+	return &newHandler
+}
+
 func (h *RawTextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return NewRawTextHandler(h.writer, nil)
+	if len(attrs) == 0 {
+		return h
+	}
+	return h.withGroupOrAttrs(groupOrAttrs{attrs: attrs})
 }
 
 func (h *RawTextHandler) WithGroup(name string) slog.Handler {
-	return h
+	if name == "" {
+		return h
+	}
+	return h.withGroupOrAttrs(groupOrAttrs{group: name})
 }
