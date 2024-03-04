@@ -97,6 +97,23 @@ func TestRlogLevel(t *testing.T) {
 	}
 }
 
+func TestRlogSource(t *testing.T) {
+	b := new(bytes.Buffer)
+	logger := slog.New(NewRawTextHandler(b, &HandlerOptions{
+		AddSource: false,
+	}))
+
+	logger.Info("test")
+	assert.NotContains(t, b.String(), "rlog_test.go:")
+
+	b.Reset()
+	loggerWithSource := slog.New(NewRawTextHandler(b, &HandlerOptions{
+		AddSource: true,
+	}))
+	loggerWithSource.Info("test")
+	assert.Contains(t, b.String(), "rlog_test.go:")
+}
+
 func TestRlogWithAttrsAndGroups(t *testing.T) {
 	b := new(bytes.Buffer)
 	logger := slog.New(NewRawTextHandler(b, nil))
