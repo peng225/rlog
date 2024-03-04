@@ -57,7 +57,7 @@ func TestRlog(t *testing.T) {
 
 func TestRlogLevel(t *testing.T) {
 	b := new(bytes.Buffer)
-	logger := slog.New(NewRawTextHandler(b, &slog.HandlerOptions{
+	logger := slog.New(NewRawTextHandler(b, &HandlerOptions{
 		Level: slog.LevelWarn,
 	}))
 	require.NotNil(t, logger)

@@ -19,14 +19,19 @@ type groupOrAttrs struct {
 	attrs []slog.Attr
 }
 
+type HandlerOptions struct {
+	AddSource bool
+	Level     slog.Leveler
+}
+
 type RawTextHandler struct {
 	mu     *sync.Mutex
 	writer io.Writer
-	opts   slog.HandlerOptions
+	opts   HandlerOptions
 	goas   []groupOrAttrs
 }
 
-func NewRawTextHandler(w io.Writer, opts *slog.HandlerOptions) *RawTextHandler {
+func NewRawTextHandler(w io.Writer, opts *HandlerOptions) *RawTextHandler {
 	h := &RawTextHandler{
 		mu:     &sync.Mutex{},
 		writer: w,
